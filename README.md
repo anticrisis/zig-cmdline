@@ -5,7 +5,7 @@ Simple command line parser.
 # Installation
 Add to your `build.zig.zon`:
 ```sh
-zig fetch --save https://github.com/anticrisis/zig-cmdline
+zig fetch --save https://github.com/anticrisis/zig-cmdline/archive/refs/tags/v0.1.0.tar.gz
 ```
 
 Then include in your `build.zig`:
