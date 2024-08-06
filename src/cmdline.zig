@@ -52,24 +52,24 @@ pub const Options = struct {
 
     /// Parse command line arguments. Allocates for process args using
     /// its own allocator (provided in init).
-    pub fn parse(self: *Options) ParseResult {
-        self._args = std.process.argsWithAllocator(self.alloc) catch @panic("OOM");
+    pub fn parse(self: *Options) !ParseResult {
+        self._args = try std.process.argsWithAllocator(self.alloc);
         return _parse(self, &self._args.?);
     }
 
     /// Create an option of the given type tag.
-    pub fn create(self: *Options, name: []const u8, tag: Option.Tag) *Option {
+    pub fn create(self: *Options, name: []const u8, tag: Option.Tag) !*Option {
         const alloc = self.alloc;
-        const option = alloc.create(Option) catch @panic("OOM");
+        const option = try alloc.create(Option);
         option.init(self, name, tag);
-        self._items.put(name, option) catch @panic("OOM");
+        try self._items.put(name, option);
         return option;
     }
 
     /// create a short-named option using the first u8 of NAME.
-    pub fn createShort(self: *Options, name: []const u8, tag: Option.Tag) *Option {
+    pub fn createShort(self: *Options, name: []const u8, tag: Option.Tag) !*Option {
         if (name.len < 1) @panic("name too short");
-        const option = self.create(name, tag);
+        const option = try self.create(name, tag);
         return option.short(name[0]);
     }
 
@@ -115,7 +115,7 @@ pub const Options = struct {
         return &self._words;
     }
 
-    pub fn short(self: *Options, short_name: u8, option: *Option) void {
+    pub fn short(self: *Options, short_name: u8, option: *Option) !void {
         var found: ?*Option = undefined;
         var it = self._items.iterator();
         while (it.next()) |e| {
@@ -124,9 +124,10 @@ pub const Options = struct {
                 break;
             }
         }
+
         if (found) |opt| {
-            self._shorts.put(short_name, opt) catch @panic("OOM");
-        } else @panic("option not found");
+            try self._shorts.put(short_name, opt);
+        } else return error.NotFound;
     }
 
     /// Reset all options to present = false for testing purposes, and clear words list
@@ -199,8 +200,8 @@ pub const Option = struct {
     }
 
     /// Add a short name to this option.
-    pub fn short(self: *Option, short_name: u8) *Option {
-        self._parent.short(short_name, self);
+    pub fn short(self: *Option, short_name: u8) !*Option {
+        try self._parent.short(short_name, self);
         return self;
     }
 
@@ -253,14 +254,14 @@ const ParseResult = union(enum) {
 };
 
 /// args must be an iterator with a next() function
-fn _parse(options: *Options, args: anytype) ParseResult {
+fn _parse(options: *Options, args: anytype) !ParseResult {
     var end_of_options: bool = false; // seen '--' ?
 
     while (args.next()) |v| {
         // form: positional argument
         if (end_of_options or !std.mem.startsWith(u8, v, "-")) {
             // positional argument
-            options._words.append(v) catch @panic("OOM");
+            try options._words.append(v);
             continue;
         }
 
@@ -401,11 +402,11 @@ test "typical command" {
     defer options.deinit();
 
     const t1 = "create --file foo.txt --verbose --db ./db";
-    _ = options.create("file", .string).short('f');
-    _ = options.create("verbose", .boolean).short('v');
-    _ = options.create("db", .string);
+    _ = try options.createShort("file", .string);
+    _ = try options.createShort("verbose", .boolean);
+    _ = try options.create("db", .string);
     {
-        var res = testCmdline(alloc, t1, &options);
+        var res = try testCmdline(alloc, t1, &options);
         defer res.iterator.deinit();
         try expect(std.mem.eql(u8, options.getString("file").?, "foo.txt"));
         try expect(std.mem.eql(u8, options.getString("db").?, "./db"));
@@ -423,7 +424,7 @@ test "typical command" {
     // -f argument is packed (-fhello)
     {
         options.reset();
-        var res = testCmdline(alloc, "create -fhello.txt", &options);
+        var res = try testCmdline(alloc, "create -fhello.txt", &options);
         defer res.deinit();
         try expect(res.parseResult == .ok);
         try expect(options.present("file") == true);
@@ -433,7 +434,7 @@ test "typical command" {
     // -f argument is packed and quoted (-f"hello world")
     {
         options.reset();
-        var res = testCmdline(alloc, "create -f\"hello world\"", &options);
+        var res = try testCmdline(alloc, "create -f\"hello world\"", &options);
         defer res.deinit();
         try expect(res.parseResult == .ok);
         try expect(options.present("file") == true);
@@ -444,7 +445,7 @@ test "typical command" {
     {
         options.reset();
         const t2 = "create foo.txt -v";
-        var res = testCmdline(alloc, t2, &options);
+        var res = try testCmdline(alloc, t2, &options);
         defer res.deinit();
         try expect(options.getString("file") == null);
 
@@ -457,7 +458,7 @@ test "typical command" {
     {
         options.reset();
         const t3 = "create --file   ";
-        var res = testCmdline(alloc, t3, &options);
+        var res = try testCmdline(alloc, t3, &options);
         defer res.deinit();
 
         try expect(res.parseResult == .err);
@@ -472,7 +473,7 @@ test "typical command" {
     {
         options.reset();
         const t = "create --file=foo.txt";
-        var res = testCmdline(alloc, t, &options);
+        var res = try testCmdline(alloc, t, &options);
         defer res.deinit();
         try expect(res.parseResult == .ok);
         try expect(std.mem.eql(u8, options.getString("file").?, "foo.txt"));
@@ -481,7 +482,7 @@ test "typical command" {
     {
         options.reset();
         const t = "create -f=foo.txt";
-        var res = testCmdline(alloc, t, &options);
+        var res = try testCmdline(alloc, t, &options);
         defer res.deinit();
         try expect(res.parseResult == .ok);
         try expect(std.mem.eql(u8, options.getString("file").?, "foo.txt"));
@@ -494,38 +495,38 @@ test "short with argument" {
     var options = try Options.init(alloc);
     defer options.deinit();
 
-    _ = options.createShort("intval", .int);
+    _ = try options.createShort("intval", .int);
     {
         options.reset();
-        var res = testCmdline(alloc, "-i123", &options);
+        var res = try testCmdline(alloc, "-i123", &options);
         defer res.deinit();
         try expect(options.getInt("intval") == 123);
         try expect(options.getInt("intval").? == 123);
     }
     {
         options.reset();
-        var res = testCmdline(alloc, "-i 123", &options);
+        var res = try testCmdline(alloc, "-i 123", &options);
         defer res.deinit();
         try expect(options.getInt("intval") == 123);
         try expect(options.getInt("intval").? == 123);
     }
-    _ = options.createShort("floatval", .float);
+    _ = try options.createShort("floatval", .float);
     {
         options.reset();
-        var res = testCmdline(alloc, "-f123.456", &options);
+        var res = try testCmdline(alloc, "-f123.456", &options);
         defer res.deinit();
         try expect(options.getFloat("floatval") == 123.456);
     }
-    _ = options.createShort("strval", .string);
+    _ = try options.createShort("strval", .string);
     {
         options.reset();
-        var res = testCmdline(alloc, "-s\"quoted string\"", &options);
+        var res = try testCmdline(alloc, "-s\"quoted string\"", &options);
         defer res.deinit();
         try expect(std.mem.eql(u8, options.getString("strval").?, "quoted string"));
     }
     {
         options.reset();
-        var res = testCmdline(alloc, "-s \"hello string\"", &options);
+        var res = try testCmdline(alloc, "-s \"hello string\"", &options);
         defer res.deinit();
         try expect(std.mem.eql(u8, options.getString("strval").?, "hello string"));
     }
@@ -537,11 +538,11 @@ test "flag packing" {
     var options = try Options.init(alloc);
     defer options.deinit();
 
-    _ = options.createShort("i-flag", .boolean);
-    _ = options.createShort("t-flag", .boolean);
-    _ = options.createShort("f-flag", .boolean);
+    _ = try options.createShort("i-flag", .boolean);
+    _ = try options.createShort("t-flag", .boolean);
+    _ = try options.createShort("f-flag", .boolean);
     {
-        var res = testCmdline(alloc, "-itf", &options);
+        var res = try testCmdline(alloc, "-itf", &options);
         defer res.deinit();
         try expect(options.present("i-flag") == true);
         try expect(options.present("t-flag") == true);
@@ -549,7 +550,7 @@ test "flag packing" {
     }
     {
         options.reset();
-        var res = testCmdline(alloc, "-i", &options);
+        var res = try testCmdline(alloc, "-i", &options);
         defer res.deinit();
         try expect(options.present("i-flag") == true);
     }
@@ -562,12 +563,12 @@ test "mixed flag packing" {
     var options = try Options.init(alloc);
     defer options.deinit();
 
-    _ = options.create("extract", .boolean).short('x');
-    _ = options.create("verify", .boolean).short('v');
-    _ = options.create("file", .string).short('f');
+    _ = try (try options.create("extract", .boolean)).short('x');
+    _ = try options.createShort("verify", .boolean);
+    _ = try options.createShort("file", .string);
 
     {
-        var res = testCmdline(alloc, "-xvf foo.txt", &options);
+        var res = try testCmdline(alloc, "-xvf foo.txt", &options);
         defer res.deinit();
         try expect(res.parseResult == .ok);
         try expect(options.present("extract") == true);
@@ -583,11 +584,11 @@ test "parse errors" {
     var options = try Options.init(alloc);
     defer options.deinit();
 
-    _ = options.createShort("b-flag", .boolean);
-    _ = options.createShort("i-flag", .int);
+    _ = try options.createShort("b-flag", .boolean);
+    _ = try options.createShort("i-flag", .int);
     {
         options.reset();
-        var res = testCmdline(alloc, "-x", &options);
+        var res = try testCmdline(alloc, "-x", &options);
         defer res.deinit();
 
         try expect(res.parseResult == .err);
@@ -596,7 +597,7 @@ test "parse errors" {
     }
     {
         options.reset();
-        var res = testCmdline(alloc, "-bx", &options);
+        var res = try testCmdline(alloc, "-bx", &options);
         defer res.deinit();
 
         try expect(res.parseResult == .err);
@@ -604,7 +605,7 @@ test "parse errors" {
         try expect(res.parseResult.err.unknownFlag == 'x');
     }
     {
-        var res = testCmdline(alloc, "-bi", &options);
+        var res = try testCmdline(alloc, "-bi", &options);
         defer res.deinit();
 
         try expect(res.parseResult == .err);
@@ -618,21 +619,21 @@ test "wrong types" {
     const alloc = std.testing.allocator;
     var options = try Options.init(alloc);
     defer options.deinit();
-    _ = options.create("int", .int);
+    _ = try options.create("int", .int);
     {
-        var res = testCmdline(alloc, "--int 123.456", &options);
+        var res = try testCmdline(alloc, "--int 123.456", &options);
         defer res.deinit();
         try expect(options.getValue("int") == null);
     }
-    _ = options.create("float", .float);
+    _ = try options.create("float", .float);
     {
-        var res = testCmdline(alloc, "--float hello", &options);
+        var res = try testCmdline(alloc, "--float hello", &options);
         defer res.deinit();
         try expect(options.getValue("float") == null);
     }
-    _ = options.create("str", .string);
+    _ = try options.create("str", .string);
     {
-        var res = testCmdline(alloc, "--float 123", &options);
+        var res = try testCmdline(alloc, "--float 123", &options);
         defer res.deinit();
         try expect(options.getValue("str") == null);
     }
@@ -644,7 +645,7 @@ test "args after --" {
     var options = try Options.init(alloc);
     defer options.deinit();
 
-    var res = testCmdline(alloc, "-- a b c --long", &options);
+    var res = try testCmdline(alloc, "-- a b c --long", &options);
     defer res.deinit();
     try expect(res.parseResult == .ok);
     try expect(options.positional().items.len == 4);
@@ -668,8 +669,8 @@ fn testCmdline(
     alloc: std.mem.Allocator,
     s: []const u8,
     options: *Options,
-) TestCmdlineResult {
-    var it = std.process.ArgIteratorGeneral(.{}).init(alloc, s) catch @panic("OOM");
-    const res = _parse(options, &it);
+) !TestCmdlineResult {
+    var it = try std.process.ArgIteratorGeneral(.{}).init(alloc, s);
+    const res = try _parse(options, &it);
     return .{ .iterator = it, .parseResult = res };
 }
