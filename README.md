@@ -5,7 +5,7 @@ Simple command line parser. Simple tuple initialisation.
 # Installation
 Add to your `build.zig.zon`:
 ```sh
-zig fetch --save https://github.com/anticrisis/zig-cmdline/archive/refs/tags/v0.2.0.tar.gz
+zig fetch --save https://github.com/anticrisis/zig-cmdline/archive/refs/tags/v0.2.1.tar.gz
 ```
 
 Then include in your `build.zig`:
@@ -56,10 +56,10 @@ var options = try options.init(
         .{"file"},
 
         // creates --extract and -x as the same option, boolean
-        .{"extract", 'x', bool},
+        .{"extract", 'x', false},
 
         // order of arguments does not matter
-        .{'x', bool, "extract"},
+        .{'x', false, "extract"},
 
         // don't want to allow a short option
         .{"unique", 0},
