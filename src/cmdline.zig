@@ -82,6 +82,10 @@ pub const Options = struct {
             if (create_opts.name == null or create_opts.name.?.len < 2)
                 return error.BadArgument;
 
+            // name must not have spaces or tabs etc
+            if (std.mem.indexOfAny(u8, create_opts.name.?, " \t\r\n") != null)
+                return error.BadArgument;
+
             // default short option is first character of name.
             if (create_opts.short == ' ')
                 create_opts.short = create_opts.name.?[0];
@@ -630,6 +634,13 @@ test "error on single-character string" {
     const alloc = std.testing.allocator;
     try std.testing.expectError(error.BadArgument, Options.init(alloc, .{
         .{ "extract", "x" },
+    }));
+}
+
+test "error on spaces in option name" {
+    const alloc = std.testing.allocator;
+    try std.testing.expectError(error.BadArgument, Options.init(alloc, .{
+        .{"I tried to put some help here"},
     }));
 }
 
