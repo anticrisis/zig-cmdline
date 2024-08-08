@@ -20,13 +20,94 @@ pub const Options = struct {
     _args: ?std.process.ArgIterator = null,
 
     /// Initialize Options struct. Caller must call deinit to release
-    /// internal buffers when finished.
-    pub fn init(alloc: std.mem.Allocator) !Options {
+    /// internal buffers when finished. OPTIONS is a tuple of tuples.
+    pub fn init(alloc: std.mem.Allocator, comptime options: anytype) error{ BadArgument, OutOfMemory }!Options {
+        const ti = @typeInfo(@TypeOf(options));
+        if (ti != .Struct or !ti.Struct.is_tuple) return error.BadArgument;
+
+        const OptionCreateOpts = struct {
+            /// The name, used as the long option, e.g. --name
+            name: ?[]const u8 = null,
+
+            /// By default, will use first character of NAME. Supply NULL to specify no short option.
+            short: ?u8 = ' ',
+
+            /// Set to true if this is a boolean option with no value captured.
+            boolean: bool = false,
+        };
+
+        var items = std.StringHashMap(*Option).init(alloc);
+        var shorts = std.AutoHashMap(u8, *Option).init(alloc);
+        const words = std.ArrayList([]const u8).init(alloc);
+
+        inline for (options) |one| {
+            const one_ti = @typeInfo(@TypeOf(one));
+            if (one_ti != .Struct or !one_ti.Struct.is_tuple) return error.BadArgument;
+
+            var create_opts = OptionCreateOpts{};
+
+            inline for (one) |x| {
+                const x_ty = @TypeOf(x);
+                const x_ti = @typeInfo(x_ty);
+
+                if (x_ty == comptime_int) {
+                    const c: u8 = x;
+                    if (c == 0) {
+                        create_opts.short = null;
+                    } else {
+                        create_opts.short = c;
+                    }
+                    continue;
+                }
+                if (x_ty == bool) {
+                    create_opts.boolean = true;
+                    continue;
+                }
+                if (x_ty == []const u8) {
+                    create_opts.name = x;
+                    continue;
+                }
+                if (x_ti == .Pointer) {
+                    if (@typeInfo(x_ti.Pointer.child) == .Array) {
+                        create_opts.name = x;
+                        continue;
+                    }
+                }
+
+                // std.debug.print("Expected a slice, bool or comptime_int, got: {}\n", .{@TypeOf(x)});
+                return error.BadArgument;
+            }
+
+            // name must exist and be more than one character
+            if (create_opts.name == null or create_opts.name.?.len < 2)
+                return error.BadArgument;
+
+            // default short option is first character of name.
+            if (create_opts.short == ' ')
+                create_opts.short = create_opts.name.?[0];
+
+            const option = try alloc.create(Option);
+
+            if (create_opts.name) |name| {
+                option.init(name, create_opts.boolean);
+                try items.put(name, option);
+            }
+
+            if (create_opts.short) |s| {
+                try shorts.put(s, option);
+            }
+
+            // set default boolean value - an odd use case but allows
+            // init to accept 'true' for options which should always
+            // be 'present'
+            option.present = create_opts.boolean;
+        }
+
         return .{
             .alloc = alloc,
-            ._items = std.StringHashMap(*Option).init(alloc),
-            ._shorts = std.AutoHashMap(u8, *Option).init(alloc),
-            ._words = std.ArrayList([]const u8).init(alloc),
+            ._items = items,
+            ._shorts = shorts,
+            ._words = words,
         };
     }
 
@@ -57,56 +138,27 @@ pub const Options = struct {
         return _parse(self, &self._args.?);
     }
 
-    /// Create an option of the given type tag.
-    pub fn create(self: *Options, name: []const u8, tag: Option.Tag) !*Option {
-        const alloc = self.alloc;
-        const option = try alloc.create(Option);
-        option.init(self, name, tag);
-        try self._items.put(name, option);
-        return option;
-    }
-
-    /// create a short-named option using the first u8 of NAME.
-    pub fn createShort(self: *Options, name: []const u8, tag: Option.Tag) !*Option {
-        if (name.len < 1) @panic("name too short");
-        const option = try self.create(name, tag);
-        return option.short(name[0]);
-    }
-
     /// Get a previously created option by its name.
-    pub fn get(self: *const Options, name: []const u8) ?*const Option {
+    pub fn getOption(self: *const Options, name: []const u8) ?*const Option {
         if (self._items.get(name)) |o| return o;
         if (name.len == 1) return self._shorts.get(name[0]);
         return null;
     }
 
-    /// Get an option's value if it is present.
-    fn getValue(self: *const Options, name: []const u8) ?Option.T {
-        if (self.get(name)) |o| if (o.present) return o.value;
-        return null;
-    }
-
-    /// Get an option's string value if it is present.
-    pub fn getString(self: *const Options, name: []const u8) ?[]const u8 {
-        if (self.getValue(name)) |v| if (v == .string) return v.string;
-        return null;
-    }
-
-    /// Get an option's i64 value if it is present.
-    pub fn getInt(self: *const Options, name: []const u8) ?i64 {
-        if (self.getValue(name)) |v| if (v == .int) return v.int;
-        return null;
-    }
-
-    /// Get an option's f64 value if it is present.
-    pub fn getFloat(self: *const Options, name: []const u8) ?f64 {
-        if (self.getValue(name)) |v| if (v == .float) return v.float;
+    /// Get an option's value if it is present. For boolean options
+    /// that are present, this will be an empty slice. If the option
+    /// is not present, null is returned.
+    fn get(self: *const Options, name: []const u8) ?[]const u8 {
+        if (self.getOption(name)) |o|
+            // if option is present, return its value (a string), or
+            // if its value is null, return an empty slice.
+            if (o.present) if (o.value) |x| return x else return "";
         return null;
     }
 
     /// Return true if option is present.
     pub fn present(self: *const Options, name: []const u8) bool {
-        if (self.get(name)) |o| return o.present;
+        if (self.getOption(name)) |o| return o.present;
         return false;
     }
 
@@ -144,54 +196,31 @@ pub const Option = struct {
     // public fields
     name: []const u8,
 
-    /// union with the argument value
-    value: T,
+    /// union with the argument value. It is initialised to an empty
+    /// slice. For boolean options, this is NULL, and the PRESENT
+    /// field is used instead.
+    value: ?[]const u8 = "",
 
     /// True if the option was seen on the command line and its
     /// argument (if any) was valid.
     present: bool = false,
 
     // private fields
-    _parent: *Options,
-
-    /// Specifies the type of the option
-    const Tag = enum { int, float, string, boolean };
-
-    /// Contains the argument value
-    const T = union(Tag) {
-        int: i64,
-        float: f64,
-        string: []const u8,
-
-        /// For a boolean, the option's `present` field is determinative.
-        boolean: struct {},
-    };
 
     /// Initialise or reset an existing Option tagged TAG.
-    pub fn init(self: *Option, parent: *Options, name: []const u8, tag: Tag) void {
-        self.* = switch (tag) {
-            .int => Option{
-                .name = name,
-                ._parent = parent,
-                .value = .{ .int = 0 },
-            },
-            .float => Option{
-                .name = name,
-                ._parent = parent,
-                .value = .{ .float = 0.0 },
-            },
-            .string => Option{
-                .name = name,
-                ._parent = parent,
-                .value = .{ .string = "" },
-            },
-            .boolean => Option{
-                .name = name,
-                ._parent = parent,
-                .value = .{ .boolean = .{} },
-            },
-        };
+    pub fn init(self: *Option, name: []const u8, boolean: bool) void {
+        if (boolean == true) {
+            self.* = Option{ .name = name, .value = null };
+        } else {
+            self.* = Option{ .name = name, .value = "" };
+        }
+
         self.reset();
+    }
+
+    /// Return true if this is a boolean option
+    pub fn isBoolean(self: Option) bool {
+        return self.value == null;
     }
 
     /// Reset option to not being present, for testing purposes.
@@ -199,36 +228,11 @@ pub const Option = struct {
         self.present = false;
     }
 
-    /// Add a short name to this option.
-    pub fn short(self: *Option, short_name: u8) !*Option {
-        try self._parent.short(short_name, self);
-        return self;
-    }
-
-    /// Load a type-checked value into option from a string, if
-    /// possible.
+    /// load a value into option from a string.
     pub fn loadFromString(self: *Option, value: []const u8) void {
         // assume success
         self.present = true;
-
-        switch (self.value) {
-            .int => if (std.fmt.parseInt(i64, value, 0)) |n| {
-                self.value.int = n;
-            } else |_| {
-                self.present = false;
-            },
-            .float => if (std.fmt.parseFloat(f64, value)) |n| {
-                self.value.float = n;
-            } else |_| {
-                self.present = false;
-            },
-            .string => {
-                self.value.string = value;
-            },
-            .boolean => {
-                self.value.boolean = .{};
-            },
-        }
+        self.value = value;
     }
 };
 
@@ -293,7 +297,7 @@ fn _parse(options: *Options, args: anytype) !ParseResult {
 
         if (options._shorts.get(key)) |opt| {
             // if opt is a boolean flag check for packed boolean flags
-            if (opt.value == .boolean) {
+            if (opt.isBoolean()) {
                 // v[1..] captures all the chars after '-'
                 const res = handlePackedBoolean(options, v[1..], args);
                 if (res == .ok) continue else return res;
@@ -309,7 +313,7 @@ fn _parse(options: *Options, args: anytype) !ParseResult {
 
 fn handleKeyEqualsValue(options: *Options, key: []const u8, val: []const u8) ParseResult {
     if (options._items.get(key)) |opt| {
-        if (opt.value != .boolean) {
+        if (!opt.isBoolean()) {
             opt.loadFromString(val);
             return .{ .ok = .{} };
         }
@@ -320,7 +324,7 @@ fn handleKeyEqualsValue(options: *Options, key: []const u8, val: []const u8) Par
 
 fn handleKeyConsumesNext(options: *Options, key: []const u8, args: anytype) ParseResult {
     if (options._items.get(key)) |opt| {
-        if (opt.value == .boolean) {
+        if (opt.isBoolean()) {
             opt.present = true;
             return .{ .ok = .{} };
         }
@@ -340,7 +344,7 @@ fn handlePackedBoolean(options: *Options, flags: []const u8, args: anytype) Pars
         if (options._shorts.get(x)) |xopt| {
             // iterate one character at a time
 
-            if (xopt.value == .boolean) {
+            if (xopt.isBoolean()) {
                 xopt.present = true;
                 continue;
             }
@@ -398,27 +402,22 @@ test "typical command" {
     const expect = std.testing.expect;
     const alloc = std.testing.allocator;
 
-    var options = try Options.init(alloc);
+    var options = try Options.init(alloc, .{
+        .{"file"}, .{ "verbose", false }, .{"db"},
+    });
     defer options.deinit();
 
     const t1 = "create --file foo.txt --verbose --db ./db";
-    _ = try options.createShort("file", .string);
-    _ = try options.createShort("verbose", .boolean);
-    _ = try options.create("db", .string);
     {
         var res = try testCmdline(alloc, t1, &options);
         defer res.iterator.deinit();
-        try expect(std.mem.eql(u8, options.getString("file").?, "foo.txt"));
-        try expect(std.mem.eql(u8, options.getString("db").?, "./db"));
+        try expect(std.mem.eql(u8, options.get("file").?, "foo.txt"));
+        try expect(std.mem.eql(u8, options.get("db").?, "./db"));
         try expect(options.present("verbose") == true);
         try expect(options.present("v") == true);
 
         try expect(options.positional().items.len == 1);
         try expect(std.mem.eql(u8, options.positional().items[0], "create"));
-
-        // retrieve with wrong type returns null
-        try (expect(options.getInt("file") == null));
-        try (expect(options.getFloat("f") == null));
     }
 
     // -f argument is packed (-fhello)
@@ -428,7 +427,7 @@ test "typical command" {
         defer res.deinit();
         try expect(res.parseResult == .ok);
         try expect(options.present("file") == true);
-        try expect(std.mem.eql(u8, options.getString("file").?, "hello.txt"));
+        try expect(std.mem.eql(u8, options.get("file").?, "hello.txt"));
     }
 
     // -f argument is packed and quoted (-f"hello world")
@@ -438,7 +437,7 @@ test "typical command" {
         defer res.deinit();
         try expect(res.parseResult == .ok);
         try expect(options.present("file") == true);
-        try expect(std.mem.eql(u8, options.getString("file").?, "hello world"));
+        try expect(std.mem.eql(u8, options.get("file").?, "hello world"));
     }
 
     // --file argument is missing
@@ -447,7 +446,7 @@ test "typical command" {
         const t2 = "create foo.txt -v";
         var res = try testCmdline(alloc, t2, &options);
         defer res.deinit();
-        try expect(options.getString("file") == null);
+        try expect(options.get("file") == null);
 
         try expect(options.positional().items.len == 2);
         try expect(std.mem.eql(u8, options.positional().items[0], "create"));
@@ -465,8 +464,8 @@ test "typical command" {
         try expect(res.parseResult.err == .missingArgument);
         try expect(std.mem.eql(u8, res.parseResult.err.missingArgument, "file"));
 
-        try expect(options.getString("file") == null);
-        try expect(options.getString("f") == null);
+        try expect(options.get("file") == null);
+        try expect(options.get("f") == null);
     }
 
     // --file argument uses --file=value form
@@ -476,8 +475,9 @@ test "typical command" {
         var res = try testCmdline(alloc, t, &options);
         defer res.deinit();
         try expect(res.parseResult == .ok);
-        try expect(std.mem.eql(u8, options.getString("file").?, "foo.txt"));
+        try expect(std.mem.eql(u8, options.get("file").?, "foo.txt"));
     }
+
     // -f argument uses -f=value form
     {
         options.reset();
@@ -485,62 +485,37 @@ test "typical command" {
         var res = try testCmdline(alloc, t, &options);
         defer res.deinit();
         try expect(res.parseResult == .ok);
-        try expect(std.mem.eql(u8, options.getString("file").?, "foo.txt"));
+        try expect(std.mem.eql(u8, options.get("file").?, "foo.txt"));
     }
 }
 
-test "short with argument" {
+test "use slice instead of static string" {
     const expect = std.testing.expect;
     const alloc = std.testing.allocator;
-    var options = try Options.init(alloc);
+
+    const file_static = "file";
+    const file_slice: []const u8 = file_static[0..file_static.len];
+
+    var options = try Options.init(alloc, .{
+        .{file_slice},
+    });
     defer options.deinit();
 
-    _ = try options.createShort("intval", .int);
-    {
-        options.reset();
-        var res = try testCmdline(alloc, "-i123", &options);
-        defer res.deinit();
-        try expect(options.getInt("intval") == 123);
-        try expect(options.getInt("intval").? == 123);
-    }
-    {
-        options.reset();
-        var res = try testCmdline(alloc, "-i 123", &options);
-        defer res.deinit();
-        try expect(options.getInt("intval") == 123);
-        try expect(options.getInt("intval").? == 123);
-    }
-    _ = try options.createShort("floatval", .float);
-    {
-        options.reset();
-        var res = try testCmdline(alloc, "-f123.456", &options);
-        defer res.deinit();
-        try expect(options.getFloat("floatval") == 123.456);
-    }
-    _ = try options.createShort("strval", .string);
-    {
-        options.reset();
-        var res = try testCmdline(alloc, "-s\"quoted string\"", &options);
-        defer res.deinit();
-        try expect(std.mem.eql(u8, options.getString("strval").?, "quoted string"));
-    }
-    {
-        options.reset();
-        var res = try testCmdline(alloc, "-s \"hello string\"", &options);
-        defer res.deinit();
-        try expect(std.mem.eql(u8, options.getString("strval").?, "hello string"));
-    }
+    var res = try testCmdline(alloc, "create --file foo.txt", &options);
+    defer res.iterator.deinit();
+    try expect(std.mem.eql(u8, options.get("file").?, "foo.txt"));
 }
 
 test "flag packing" {
     const expect = std.testing.expect;
     const alloc = std.testing.allocator;
-    var options = try Options.init(alloc);
+    var options = try Options.init(alloc, .{
+        .{ "i-flag", false },
+        .{ "t-flag", false },
+        .{ "f-flag", false },
+    });
     defer options.deinit();
 
-    _ = try options.createShort("i-flag", .boolean);
-    _ = try options.createShort("t-flag", .boolean);
-    _ = try options.createShort("f-flag", .boolean);
     {
         var res = try testCmdline(alloc, "-itf", &options);
         defer res.deinit();
@@ -560,12 +535,12 @@ test "mixed flag packing" {
     const expect = std.testing.expect;
     const eql = std.mem.eql;
     const alloc = std.testing.allocator;
-    var options = try Options.init(alloc);
+    var options = try Options.init(alloc, .{
+        .{ "extract", 'x', false },
+        .{ "verify", false },
+        .{"file"},
+    });
     defer options.deinit();
-
-    _ = try (try options.create("extract", .boolean)).short('x');
-    _ = try options.createShort("verify", .boolean);
-    _ = try options.createShort("file", .string);
 
     {
         var res = try testCmdline(alloc, "-xvf foo.txt", &options);
@@ -573,7 +548,7 @@ test "mixed flag packing" {
         try expect(res.parseResult == .ok);
         try expect(options.present("extract") == true);
         try expect(options.present("verify") == true);
-        try expect(eql(u8, options.getString("file").?, "foo.txt"));
+        try expect(eql(u8, options.get("file").?, "foo.txt"));
     }
 }
 
@@ -581,11 +556,12 @@ test "parse errors" {
     const expect = std.testing.expect;
     const alloc = std.testing.allocator;
     const eql = std.mem.eql;
-    var options = try Options.init(alloc);
+    var options = try Options.init(alloc, .{
+        .{ "b-flag", false },
+        .{"i-flag"},
+    });
     defer options.deinit();
 
-    _ = try options.createShort("b-flag", .boolean);
-    _ = try options.createShort("i-flag", .int);
     {
         options.reset();
         var res = try testCmdline(alloc, "-x", &options);
@@ -614,35 +590,10 @@ test "parse errors" {
     }
 }
 
-test "wrong types" {
-    const expect = std.testing.expect;
-    const alloc = std.testing.allocator;
-    var options = try Options.init(alloc);
-    defer options.deinit();
-    _ = try options.create("int", .int);
-    {
-        var res = try testCmdline(alloc, "--int 123.456", &options);
-        defer res.deinit();
-        try expect(options.getValue("int") == null);
-    }
-    _ = try options.create("float", .float);
-    {
-        var res = try testCmdline(alloc, "--float hello", &options);
-        defer res.deinit();
-        try expect(options.getValue("float") == null);
-    }
-    _ = try options.create("str", .string);
-    {
-        var res = try testCmdline(alloc, "--float 123", &options);
-        defer res.deinit();
-        try expect(options.getValue("str") == null);
-    }
-}
-
 test "args after --" {
     const expect = std.testing.expect;
     const alloc = std.testing.allocator;
-    var options = try Options.init(alloc);
+    var options = try Options.init(alloc, .{});
     defer options.deinit();
 
     var res = try testCmdline(alloc, "-- a b c --long", &options);
@@ -653,6 +604,27 @@ test "args after --" {
     try expect(std.mem.eql(u8, options.positional().items[1], "b"));
     try expect(std.mem.eql(u8, options.positional().items[2], "c"));
     try expect(std.mem.eql(u8, options.positional().items[3], "--long"));
+}
+
+test "suppress short option" {
+    const expect = std.testing.expect;
+    const alloc = std.testing.allocator;
+    var options = try Options.init(alloc, .{
+        .{ "special", 0 },
+    });
+    defer options.deinit();
+
+    var res = try testCmdline(alloc, "-s hello", &options);
+    defer res.deinit();
+    try expect(!options.present("special"));
+}
+
+test "error on single-character string" {
+    // should use a u8 instead
+    const alloc = std.testing.allocator;
+    try std.testing.expectError(error.BadArgument, Options.init(alloc, .{
+        .{ "extract", "x" },
+    }));
 }
 
 const TestCmdlineResult = struct {

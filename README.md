@@ -1,11 +1,11 @@
 # Cmdline
 
-Simple command line parser.
+Simple command line parser. Simple tuple initialisation.
 
 # Installation
 Add to your `build.zig.zon`:
 ```sh
-zig fetch --save https://github.com/anticrisis/zig-cmdline/archive/refs/tags/v0.1.0.tar.gz
+zig fetch --save https://github.com/anticrisis/zig-cmdline/archive/refs/tags/v0.2.0.tar.gz
 ```
 
 Then include in your `build.zig`:
@@ -41,39 +41,41 @@ Then include in your `build.zig`:
 - Short option character can be different from first letter of long
   option, e.g. (`--extract` and `-x` can be the same option).
 
-- Typed values `i64` or `f64`
-
-- Panics on out of memory errors during configuration, to make API a
-  bit easier to use.
-
 - Does not check for required arguments or print usage or errors.
+
+- Simple initialisation
 
 
 # Usage
 ```zig
-// provide an allocator
-var options = try options.init(alloc);
+// provide an allocator, and define all options:
+var options = try options.init(
+    alloc,
+    .{
+        // specified --file and -f which expect an argument
+        .{"file"},
+
+        // creates --extract and -x as the same option, boolean
+        .{"extract", 'x', bool},
+
+        // order of arguments does not matter
+        .{'x', bool, "extract"},
+
+        // don't want to allow a short option
+        .{"unique", 0},
+     },
+);
 defer options.deinit();
 
-// creates --extract and -x as the same option, which has no value
-_ = options.create("extract", .boolean).short('x');
-
-// creates --file and -f in one call, which has a string value
-_ = options.createShort("file", .string);
-
-// could retain the return values above. They are *Option, which will
-// be filled during parse. But possibly easier to use get("name") API as
-// shown below.
-
 // parse the command line arguments from std.os.process
-const result = options.parse();
+const result = try options.parse();
 
 if (result == .err) {
     // switch on .err for detailed error information, and/or
     // print usage and exit
 }
 
-if (options.getString("file")) |filename| { ... }
+if (options.get("file")) |filename| { ... }
 if (options.present("extract")) { ... }
 for (options.positional().items) |pos| { ... }
 ```
