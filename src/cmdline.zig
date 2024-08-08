@@ -100,11 +100,6 @@ pub const Options = struct {
             if (create_opts.short) |s| {
                 try shorts.put(s, option);
             }
-
-            // set default boolean value - an odd use case but allows
-            // init to accept 'true' for options which should always
-            // be 'present'
-            option.present = create_opts.boolean;
         }
 
         return .{
@@ -396,14 +391,14 @@ test "typical command" {
     });
     defer options.deinit();
 
-    const t1 = "create --file foo.txt --verbose --db ./db";
+    const t1 = "create --file foo.txt --db ./db";
     {
         var res = try testCmdline(alloc, t1, &options);
         defer res.iterator.deinit();
         try expect(std.mem.eql(u8, options.get("file").?, "foo.txt"));
         try expect(std.mem.eql(u8, options.get("db").?, "./db"));
-        try expect(options.present("verbose") == true);
-        try expect(options.present("v") == true);
+        try expect(options.present("verbose") == false);
+        try expect(options.present("v") == false);
 
         try expect(options.positional().items.len == 1);
         try expect(std.mem.eql(u8, options.positional().items[0], "create"));
@@ -412,11 +407,13 @@ test "typical command" {
     // -f argument is packed (-fhello)
     {
         options.reset();
-        var res = try testCmdline(alloc, "create -fhello.txt", &options);
+        var res = try testCmdline(alloc, "create -fhello.txt -v", &options);
         defer res.deinit();
         try expect(res.parseResult == .ok);
         try expect(options.present("file") == true);
         try expect(std.mem.eql(u8, options.get("file").?, "hello.txt"));
+        try expect(options.present("verbose") == true);
+        try expect(options.present("v") == true);
     }
 
     // -f argument is packed and quoted (-f"hello world")
