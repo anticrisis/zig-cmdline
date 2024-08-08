@@ -5,7 +5,7 @@ Simple command line parser. Simple tuple initialisation.
 # Installation
 Add to your `build.zig.zon`:
 ```sh
-zig fetch --save https://github.com/anticrisis/zig-cmdline/archive/refs/tags/v0.2.1.tar.gz
+zig fetch --save https://github.com/anticrisis/zig-cmdline/archive/refs/tags/v0.2.2.tar.gz
 ```
 
 Then include in your `build.zig`:
