@@ -167,21 +167,6 @@ pub const Options = struct {
         return &self._words;
     }
 
-    pub fn short(self: *Options, short_name: u8, option: *Option) !void {
-        var found: ?*Option = undefined;
-        var it = self._items.iterator();
-        while (it.next()) |e| {
-            if (e.value_ptr.* == option) {
-                found = option;
-                break;
-            }
-        }
-
-        if (found) |opt| {
-            try self._shorts.put(short_name, opt);
-        } else return error.NotFound;
-    }
-
     /// Reset all options to present = false for testing purposes, and clear words list
     pub fn reset(self: *Options) void {
         var it = self._items.iterator();
@@ -207,7 +192,7 @@ pub const Option = struct {
 
     // private fields
 
-    /// Initialise or reset an existing Option tagged TAG.
+    /// Initialise or reset an existing Option.
     pub fn init(self: *Option, name: []const u8, boolean: bool) void {
         if (boolean == true) {
             self.* = Option{ .name = name, .value = null };
@@ -588,6 +573,27 @@ test "parse errors" {
         try expect(res.parseResult.err == .missingArgument);
         try expect(eql(u8, res.parseResult.err.missingArgument, "i-flag"));
     }
+}
+
+test "positional arguments" {
+    const expect = std.testing.expect;
+    const alloc = std.testing.allocator;
+    var options = try Options.init(alloc, .{
+        .{"file"},
+        .{ "verbose", false },
+        .{ "gflag", false },
+    });
+    defer options.deinit();
+
+    // here the -g flag is a boolean so it doesn't consume the next word
+    var res = try testCmdline(alloc, "open file -f name.txt -v -g last", &options);
+    defer res.deinit();
+    try expect(options.positional().items.len == 3);
+    try expect(std.mem.eql(u8, options.positional().items[0], "open"));
+    try expect(std.mem.eql(u8, options.positional().items[1], "file"));
+    try expect(std.mem.eql(u8, options.positional().items[2], "last"));
+    try expect(std.mem.eql(u8, options.get("file").?, "name.txt"));
+    try expect(options.present("gflag"));
 }
 
 test "args after --" {

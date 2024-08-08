@@ -35,8 +35,8 @@ Then include in your `build.zig`:
     considered positional
 
 - Positional arguments
-  - everything without a dash is positional, can be interleaved with
-    options
+  - everything without a dash is positional (unless it's an argument
+    to an option), can be interleaved with options
 
 - Short option character can be different from first letter of long
   option, e.g. (`--extract` and `-x` can be the same option).
@@ -44,6 +44,8 @@ Then include in your `build.zig`:
 - Does not check for required arguments or print usage or errors.
 
 - Simple initialisation
+
+- Does not aim to be full featured, just the basics
 
 
 # Usage
